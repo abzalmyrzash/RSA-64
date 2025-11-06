@@ -1,0 +1,8 @@
+*.o
+*.d
+*.prv
+*.pub
+*.txt
+*.bat
+*.exe
+*.out
