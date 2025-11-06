@@ -2,6 +2,8 @@
 #include "base64.h"
 #include "random.h"
 #include "bits.h"
+#include "files.h"
+#include "prompt.h"
 #include "clipboard.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,26 +12,50 @@
 #include <assert.h>
 #include <math.h>
 #include <time.h>
-#include <ctype.h>
-#include <windows.h>
+#include <conio.h>
 #include <inttypes.h>
 
 const char* keynamesFilename = "keynames.txt";
 
-void saveKeynames();
+typedef enum {
+	PRIVATE,
+	PUBLIC
+} KeyType;
+
+#define NONE -1
+
+bool loadKey(KeyType keyType);
 
 void loadKeys();
 
-void setKeysMenu();
+void saveKeynames();
 
 #define FILENAME_SIZE 256
+#define COMMAND_SIZE  512
+#define MAX_CMD_LEN   2    // without arguments
 #define MESSAGE_SIZE  4096
+
+#define KEYS_DIR  "keys"
+#define KEYS_PATH "keys/"
+
+#define HELP_PATH "help/"
+
+#define PUB_EXT  ".pub"
+#define PRIV_EXT ".prv"
+
+#define CMD_GENERATE_KEYS "g"
+#define CMD_SET_KEYS      "k"
+#define CMD_ENCRYPT       "e"
+#define CMD_ENCRYPT_MANY  "em"
+#define CMD_ENCRYPT_FILE  "ef"
+#define CMD_DECRYPT       "d"
+#define CMD_DECRYPT_FILE  "df"
+#define CMD_HELP          "h"
+#define CMD_QUIT          "q"
 
 char message[MESSAGE_SIZE];
 char filename[FILENAME_SIZE];
 
-#define KEYS_DIR "keys"
-#define KEYS_PATH "keys/"
 const int keysPathLen = sizeof(KEYS_PATH) - 1;
 
 char keyFilenameFull[FILENAME_SIZE] = KEYS_PATH;
@@ -41,10 +67,8 @@ char* privFilename = privFilenameFull + keysPathLen;
 char pubFilenameFull[FILENAME_SIZE] = KEYS_PATH;
 char* pubFilename = pubFilenameFull + keysPathLen;
 
-const char pubExt[] = ".pub";
-const char privExt[] = ".prv";
-const int pubExtLen = sizeof(pubExt) - 1;
-const int privExtLen = sizeof(privExt) - 1;
+const int pubExtLen = sizeof(PUB_EXT) - 1;
+const int privExtLen = sizeof(PRIV_EXT) - 1;
 const int maxExtLen = pubExtLen > privExtLen ?
 						pubExtLen : privExtLen;
 const int maxNoExtSize = FILENAME_SIZE - maxExtLen - keysPathLen;
@@ -54,495 +78,578 @@ uint64_t privD = 0;
 uint64_t pubN  = 0;
 uint64_t pubE  = 0;
 
-char getOption() {
-	char c = toupper(getchar());
-	if (c != '\n') while (getchar() != '\n');
-	return c;
-}
-
-void pressEnterToContinue() {
-	printf("Press enter to continue...");
-	while(getchar() != '\n');
-}
-
-const char HELP_MESSAGE[] =
-	"This is a program that uses the RSA public-key\n"
-	"cryptography algorithm.\n"
-	"\n"
-	"You need to generate a pair of keys - one public\n"
-	"(.pub file) and one private (.prv file).\n"
-	"\n"
-	"You will share your public key with your friend,\n"
-	"and obviously, keep your private key to yourself.\n"
-	"\n"
-	"Your friend can then use your public key to encrypt\n"
-	"a message, which you (and no one else*) can decrypt\n"
-	"with your private key.\n"
-	"\n"
-	"Similarly, you will ask for your friend's public key\n"
-	"to send him encrypted messages only he* can decrypt.\n"
-	"\n"
-	"Make sure that you have the required files in the\n"
-	"program's keys directory and have set the keys before\n"
-	"encryption/decryption.\n"
-	"\n"
-	"* No one else ideally, however this is a toy program\n"
-	"  that only generates up to 64-bit keys.\n"
-	"\n"
-	"  Since the original RSA paper from 1977 recommends\n"
-	"  200-digit (663-bit) keys, you can imagine how easy\n"
-	"  it is to crack a 64-bit key now.\n"
-	"\n";
-
 int main(int argc, char* argv[]) {
 	srand(time(NULL));
 	initRandom();
 	initBase64();
 
-	CreateDirectory(KEYS_DIR, NULL);
+	char cmd[COMMAND_SIZE];
 
-	if (ERROR_ALREADY_EXISTS == GetLastError())
+	int mkdirRes = mkdir(KEYS_DIR);
+	if (mkdirRes == DIR_ALREADY_EXISTS)
 	{
 		loadKeys();
 	}
-	else {
+	else if (mkdirRes == ERROR) {
 		printf("Failed to create keys directory\n");
 		return 1;
 	}
 
-	bool welcomed = false;
-	
-mainMenu:
-	system("cls");
+	printf("Welcome to Abzal's 64-bit RSA encryption program!\n"
+			"(obviously not intended for serious use)\n"
+			"\n"
+			"Type h to get help.\n"
+			"\n");
 
-	if (!welcomed) {
-		welcomed = true;
-		printf("Welcome to Abzal's 64-bit RSA encryption program!\n");
-		printf("(obviously not intended for serious use)\n");
-	}
-
-	printf("\n");
-	printf("MAIN MENU\n");
-	printf("\n");
-	printf("Enter one of the options below:\n");
-	printf("\n");
-
-	printf("(G)enerate keys\n");
-	printf("(S)et keys\n");
-	printf("(E)ncrypt\n");
-	printf("(D)ecrypt\n");
-	printf("(H)elp\n");
-	printf("(Q)uit");
-	printf("\n");
-
-	#define MAIN_OPT_GENERATE_KEYS 'G'
-	#define MAIN_OPT_SET_KEYS      'S'
-	#define MAIN_OPT_ENCRYPT       'E'
-	#define MAIN_OPT_DECRYPT       'D'
-	#define MAIN_OPT_HELP          'H'
-	#define MAIN_OPT_QUIT          'Q'
-
-	const char validMainOptions[] = "GSEDHQ";
-
-	char mainOpt;
-
-retryMainOpt:
+promptCmd:
 	printf("> ");
-	mainOpt = getOption();
-	if (!strchr(validMainOptions, mainOpt)) {
-		printf("Invalid option!\n");
-		goto retryMainOpt;
+
+	char c;
+	while ((c = getchar()) == ' ');
+	ungetc(c, stdin);
+
+	fgets(cmd, COMMAND_SIZE, stdin);
+	const int totalCmdLen = strlen(cmd);
+	const int cmdLen = strcspn(cmd, " \n");
+
+	if (cmdLen > MAX_CMD_LEN) {
+		printf("Too long.\n");
+		goto promptCmd;
+	} else if (cmdLen == 0) {
+		goto promptCmd;
 	}
-	printf("\n");
 
-	switch(mainOpt)
+	cmd[cmdLen] = '\0';
+	char* args = cmd + cmdLen + 1;
+	const int argsLen = strcspn(args, "\n");
+	args[argsLen] = '\0';
+
+	if (strcmp(cmd, CMD_GENERATE_KEYS) == 0)
 	{
-		case MAIN_OPT_GENERATE_KEYS: {
-			system("cls");
-			printf("Generating keys...\n");
-			uint64_t n, d, e;
-			generateKeys(&n, &d, &e);
+		printf("Generating keys...\n");
+		uint64_t n, d, e;
+		generateKeys(&n, &d, &e);
 
-			printf("Done!\n");
-			
-		retryKeyName:
-			printf("Enter key name "
-					"(leave blank to cancel): ");
+		printf("Done!\n");
 
-			fgets(keyFilename, maxNoExtSize, stdin);
+		if (argsLen > 0 && argsLen < maxNoExtSize) {
+			memcpy(keyFilename, args, argsLen + 1);
+			goto skipKeyName;
+		} else {
+			if (argsLen >= maxNoExtSize) {
+				printf("Name too long!\n");
+			}
+		}
 
-			const int noExtLen = strcspn(keyFilename, ".\n");
-			if (noExtLen == 0)
-				goto mainMenu;
+	promptKeyName:
+		printf("Enter key name: ");
+		fgets(keyFilename, maxNoExtSize, stdin);
 
-			keyFilename[noExtLen] = '\0';
-			strcat(keyFilename, pubExt);
+	skipKeyName:
+		const int noExtLen = strcspn(keyFilename, ".\n");
+		if (noExtLen == 0) {
+			goto promptKeyName;
+		}
 
+		keyFilename[noExtLen] = '\0';
+		strcat(keyFilename, PUB_EXT);
+
+		FILE* file;
+		file = fopen(keyFilenameFull, "r");
+
+		if (file) {
+			fclose(file);
+			printf("%s exists! ", keyFilename);
+			printf("Confirm overwrite? (Y/N) ");
+			char c = getOption();
+			if (c != 'Y') {
+				goto promptKeyName;
+			}
+		}
+
+		file = fopen(keyFilenameFull, "w");
+
+		if (!file) {
+			printf("Could not open %s. Please retry.\n",
+					keyFilename);
+			goto promptKeyName;
+		}
+
+		fprintf(file, "%" PRIu64 "\n%" PRIu64, n, e);
+		fclose(file);
+
+		printf("Public key saved in %s\n", keyFilename);
+
+		keyFilename[noExtLen] = '\0';
+		strcat(keyFilename, PRIV_EXT);
+
+		file = fopen(keyFilenameFull, "r");
+
+		if (file) {
+			fclose(file);
+			printf("%s exists! ", keyFilename);
+			printf("Confirm overwrite? (Y/N) ");
+			char c = getOption();
+			if (c != 'Y') {
+				goto promptCmd;
+			}
+		}
+
+		file = fopen(keyFilenameFull, "w");
+
+		if (!file) {
+			printf("Could not open %s. Please retry.\n",
+					keyFilename);
+			goto promptCmd;
+		}
+
+		fprintf(file, "%" PRIu64 "\n%" PRIu64, n, d);
+		fclose(file);
+
+		printf("Private key saved in %s\n", keyFilename);
+
+		printf("Set %s as your default private key? (Y/N) ",
+				keyFilename);
+		char c = getOption();
+		if (c == 'Y' || c == 'y') {
+			privN = n;
+			privD = d;
+			const int totalLen = noExtLen + privExtLen;
+			memcpy(privFilename, keyFilename, totalLen + 1);
+			saveKeynames();
+			printf("Saved.\n");
+		}
+
+		printf("Remember: only share your public key file, "
+				"NOT your private key!\n");
+
+		pressAnyKeyToContinue();
+	}
+
+	else if (strcmp(cmd, CMD_SET_KEYS) == 0)
+	{
+		char* filename = strtok(args, " \n");
+		if (filename == NULL) {
+			printf("Private key: %s\n", privFilename);
+			printf("Public key:  %s\n", pubFilename);
+			goto promptCmd;
+		}
+
+		KeyType keyType = NONE;
+		int cnt = 0;
+		while (filename != NULL)
+		{
+			const char* ext = getExtension(filename);
+
+			if (ext == NULL) {
+				printf("No extension!\n");
+				goto promptCmd;
+			}
+
+			if (strcmp(ext, PUB_EXT) == 0) {
+				if (keyType != PUBLIC) {
+					keyType = PUBLIC;
+				} else {
+					printf("Select one public and "
+							"one private key!\n");
+					goto promptCmd;
+				}
+			}
+
+			else if (strcmp(ext, PRIV_EXT) == 0) {
+				if (keyType != PRIVATE) {
+					keyType = PRIVATE;
+				} else {
+					printf("Select one public and "
+							"one private key!\n");
+					goto promptCmd;
+				}
+			}
+
+			else {
+				printf("Wrong extension!\n");
+				goto promptCmd;
+			}
+
+			strcpy(keyFilename, filename);
+
+			loadKey(keyType);
+
+			if (++cnt == 2) break;
+			filename = strtok(NULL, " \n");
+		}
+	}
+
+	else if (strcmp(cmd, CMD_ENCRYPT) == 0 ||
+			 strcmp(cmd, CMD_ENCRYPT_MANY) == 0 ||
+			 strcmp(cmd, CMD_ENCRYPT_FILE) == 0)
+	{
+		if (pubN == 0 || pubE == 0) {
+			printf("Public key not set!\n");
+			goto promptCmd;
+		}
+
+		char* str;
+		size_t len;
+		bool isFile;
+
+		if (strcmp(cmd, CMD_ENCRYPT) == 0) {
+			isFile = false;
+			if (argsLen == 0) {
+				printf("Please provide text!\n");
+				goto promptCmd;
+			}
+			str = args;
+			len = argsLen;
+		}
+
+		else if (strcmp(cmd, CMD_ENCRYPT_MANY) == 0) {
+			isFile = false;
+			char ch;
+			int cnt;
+
+			if (argsLen > 0) {
+				memcpy(message, args, argsLen + 1);
+				message[argsLen] = '\n';
+				cnt = argsLen + 1;
+			} else cnt = 0;
+
+			while (cnt < MESSAGE_SIZE - 1) {
+				ch = getchar();
+				if (ch == EOF) {
+					if (message[cnt - 1] == '\n') {
+						message[--cnt] = '\0';
+					}
+					break;
+				}
+				message[cnt++] = ch;
+			}
+			str = message;
+			len = cnt;
+		}
+
+		else {
+			isFile = true;
 			FILE* file;
-			file = fopen(keyFilenameFull, "r");
 
+			if (argsLen == 0) {
+				printf("Please provide filename!\n");
+				goto promptCmd;
+			}
+			memcpy(filename, args, argsLen + 1);
+
+			file = fopen(filename, "rb");
+			if (!file) {
+				printf("Could not open file. Please retry.\n");
+				goto promptCmd;
+			}
+
+			const char* basename = getBasename(filename);
+			const int basenameSize = strlen(basename) + 1;
+
+			fseek(file, 0, SEEK_END);
+			long fsize = ftell(file);
+			fseek(file, 0, SEEK_SET);
+
+			if (fsize == 0) {
+				printf("File is empty!\n");
+				goto promptCmd;
+			}
+
+			len = fsize + basenameSize + sizeof(uint64_t);
+
+			str = malloc(len);
+			encodeBigEndian64(fsize, str);
+			
+			fread(str + sizeof(uint64_t), len, 1, file);
+			fclose(file);
+
+			memcpy(str + sizeof(uint64_t) + fsize,
+					basename, basenameSize);
+		}
+
+		printf("Using %s.\n", pubFilename);
+
+		const int bitsPerBlock = cntBits(pubN);
+		size_t size;
+		uint64_t* blocks;
+		uint64_t* encrypted;
+		uint8_t* merged;
+		size_t mergedLen;
+		char* base64;
+		size_t base64Len;
+
+		printf("Dividing into blocks...\n");
+		blocks = divide(str, len, bitsPerBlock - 1, &size);
+		if (isFile) free(str);
+
+		printf("Encrypting...\n");
+		encrypted = crypt(blocks, size, pubN, pubE);
+		free(blocks);
+
+		printf("Merging...\n");
+		merged = merge(encrypted, size, bitsPerBlock,
+				&mergedLen);
+		free(encrypted);
+
+		if (isFile) {
+			FILE* file;
+		retryEncryptSave:
+			printf("Save as: ");
+			fgets(filename, FILENAME_SIZE, stdin);
+			filename[strcspn(filename, "\n")] = '\0';
+
+			file = fopen(filename, "r");
 			if (file) {
 				fclose(file);
-				printf("%s exists! ", keyFilename);
+				printf("%s exists! ", filename);
 				printf("Confirm overwrite? (Y/N) ");
 				char c = getOption();
 				if (c != 'Y') {
-					goto retryKeyName;
-				}
-			}
-
-			file = fopen(keyFilenameFull, "w");
-
-			if (!file) {
-				printf("Could not open %s. Please retry.\n",
-						keyFilename);
-				goto retryKeyName;
-			}
-
-			fprintf(file, "%" PRIu64 "\n%" PRIu64, n, e);
-			fclose(file);
-
-			printf("Public key saved in %s\n", keyFilename);
-
-			keyFilename[noExtLen] = '\0';
-			strcat(keyFilename, privExt);
-
-			file = fopen(keyFilenameFull, "r");
-
-			if (file) {
-				fclose(file);
-				printf("%s exists! ", keyFilename);
-				printf("Confirm overwrite? (y/n) ");
-				char c = getOption();
-				if (c != 'Y') {
-					goto retryKeyName;
-				}
-			}
-
-			file = fopen(keyFilenameFull, "w");
-
-			if (!file) {
-				printf("Could not open %s. Please retry.\n",
-						keyFilename);
-				goto retryKeyName;
-			}
-
-			fprintf(file, "%" PRIu64 "\n%" PRIu64, n, d);
-			fclose(file);
-
-			printf("Private key saved in %s\n", keyFilename);
-
-			printf("Set %s as your default private key? (y/n) ",
-					keyFilename);
-			char c = getOption();
-			if (c == 'Y' || c == 'y') {
-				privN = n;
-				privD = d;
-				const int totalLen = noExtLen + privExtLen;
-				memcpy(privFilename, keyFilename, totalLen + 1);
-				saveKeynames();
-			}
-
-			printf("Remember: only share your public key file, "
-					"NOT your private key!\n");
-
-			pressEnterToContinue();
-			break;
-		}
-
-		case MAIN_OPT_SET_KEYS:
-		{
-			setKeysMenu();
-			break;
-		}
-
-		case MAIN_OPT_ENCRYPT:
-		{
-			if (pubN == 0 || pubE == 0) {
-				printf("Public key not set!\n");
-				goto mainMenu;
-			}
-
-			system("cls");
-			printf("Your message will be encrypted using %s.\n",
-					pubFilename);
-			printf("If you want to encrypt a file, enter blank,\n"
-					"and then enter filename.\n"
-					"Enter blank twice to quit to main menu.\n\n");
-			printf("Enter message: ");
-
-			char* str;
-			size_t len;
-			bool isFile;
-			fgets(message, MESSAGE_SIZE, stdin);
-
-			if (message[0] == '\n') {
-				isFile = true;
-				FILE* file;
-
-			retryEncryptFilename:
-				printf("Enter filename: ");
-				fgets(filename, FILENAME_SIZE, stdin);
-				int filenameLen = strcspn(filename, "\n");
-
-				if (filenameLen == 0) goto mainMenu;
-				filename[filenameLen] = '\0';
-
-				file = fopen(filename, "rb");
-				if (!file) {
-					printf("Could not open file. Please retry.\n");
-					goto retryEncryptFilename;
-				}
-
-				fseek(file, 0, SEEK_END);
-				long fsize = ftell(file);
-				fseek(file, 0, SEEK_SET);
-
-				if (fsize == 0) {
-					printf("File is empty!\n");
-					pressEnterToContinue();
-					break;
-				}
-
-				len = fsize + sizeof(size_t);
-
-				str = malloc(len);
-				encodeBigEndian64(fsize, str);
-				fread(str + sizeof(size_t), len, 1, file);
-				fclose(file);
-			}
-
-			else {
-				isFile = false;
-				len = strcspn(message, "\n");
-				message[len] = '\0';
-				str = message;
-			}
-
-			const int bitsPerBlock = cntBits(pubN);
-			size_t size;
-			uint64_t* blocks;
-			uint64_t* encrypted;
-			uint8_t* merged;
-			size_t mergedLen;
-			char* base64;
-			size_t base64Len;
-
-			printf("Dividing into blocks...\n");
-			blocks = divide(str, len, bitsPerBlock - 1, &size);
-			if (isFile) free(str);
-
-			printf("Encrypting...\n");
-			encrypted = crypt(blocks, size, pubN, pubE);
-			free(blocks);
-
-			printf("Merging...\n");
-			merged = merge(encrypted, size, bitsPerBlock,
-					&mergedLen);
-			free(encrypted);
-
-			if (isFile) {
-				FILE* file;
-			retryEncryptSave:
-				printf("Save as: ");
-				fgets(filename, FILENAME_SIZE, stdin);
-				filename[strcspn(filename, "\n")] = '\0';
-
-				file = fopen(filename, "r");
-				if (file) {
-					fclose(file);
-					printf("%s exists! ", filename);
-					printf("Confirm overwrite? (Y/N) ");
-					char c = getOption();
-					if (c != 'Y') {
-						goto retryEncryptSave;
-					}
-				}
-
-				file = fopen(filename, "wb");
-				if (!file) {
-					printf("Could not open %s. Please retry.\n",
-							filename);
 					goto retryEncryptSave;
 				}
-				
-				fwrite(merged, mergedLen, 1, file);
-				fclose(file);
-				printf("File saved.\n");
-
-				free(merged);
 			}
 
-			else {
-				printf("Encoding to Base64...\n");
-				base64 = encodeBase64(merged, mergedLen, &base64Len);
-				free(merged);
-				printf("%s\n", base64);
-				copyToClipboard((char*)base64);
-				printf("Result copied to clipboard automatically.\n");
-				free(base64);
+			file = fopen(filename, "wb");
+			if (!file) {
+				printf("Could not open %s. Please retry.\n",
+						filename);
+				goto retryEncryptSave;
 			}
+			
+			fwrite(merged, mergedLen, 1, file);
+			fclose(file);
+			printf("File saved.\n");
 
-			pressEnterToContinue();
-			break;
+			free(merged);
 		}
 
-		case MAIN_OPT_DECRYPT:
-		{
-			if (privN == 0 || privD == 0) {
-				printf("Private key not set!\n");
-				goto mainMenu;
-			}
-
-			system("cls");
-			printf("Your message will be decrypted using %s.\n",
-					privFilename);
-			printf("If you want to decrypt a file, enter blank,\n"
-					"and then enter filename.\n"
-					"Enter blank twice to quit to main menu.\n\n");
-			printf("Enter message: ");
-
-			uint8_t* str;
-			size_t len;
-			bool isFile;
-			fgets(message, MESSAGE_SIZE, stdin);
-
-			if (message[0] == '\n') {
-				isFile = true;
-				FILE* file;
-
-			retryDecryptFilename:
-				printf("Enter filename: ");
-				fgets(filename, FILENAME_SIZE, stdin);
-				int filenameLen = strcspn(filename, "\n");
-
-				if (filenameLen == 0) goto mainMenu;
-				filename[filenameLen] = '\0';
-
-				file = fopen(filename, "rb");
-				if (!file) {
-					printf("Could not open file. Please retry.\n");
-					goto retryDecryptFilename;
-				}
-
-				fseek(file, 0, SEEK_END);
-				long fsize = ftell(file);
-				fseek(file, 0, SEEK_SET);
-
-				if (fsize == 0) {
-					printf("File is empty!\n");
-					pressEnterToContinue();
-					break;
-				}
-
-				len = fsize;
-
-				str = malloc(len);
-				fread(str, len, 1, file);
-				fclose(file);
-			}
-
-			else {
-				isFile = false;
-				len = strcspn(message, "\n");
-				message[len] = '\0';
-				printf("Decoding from Base64...\n");
-				size_t decodedLen;
-				str = decodeBase64(message, len, &decodedLen);
-				len = decodedLen;
-			}
-
-			const int bitsPerBlock = cntBits(privN);
-			size_t size;
-			uint64_t* blocks;
-			uint64_t* decrypted;
-			char* merged;
-			size_t mergedLen;
-
-			printf("Dividing into blocks...\n");
-			blocks = divide(str, len, bitsPerBlock, &size);
-			if (isFile) free(str);
-
-			printf("Decrypting...\n");
-			decrypted = crypt(blocks, size, privN, privD);
-			free(blocks);
-
-			printf("Merging...\n");
-			merged = merge(decrypted, size, bitsPerBlock - 1,
-					&mergedLen);
-			free(decrypted);
-
-			if (isFile) {
-				FILE* file;
-			retryDecryptSave:
-				printf("Save as: ");
-				fgets(filename, FILENAME_SIZE, stdin);
-				filename[strcspn(filename, "\n")] = '\0';
-
-				file = fopen(filename, "r");
-				if (file) {
-					fclose(file);
-					printf("%s exists! ", filename);
-					printf("Confirm overwrite? (Y/N) ");
-					char c = getOption();
-					if (c != 'Y') {
-						goto retryDecryptSave;
-					}
-				}
-
-				file = fopen(filename, "wb");
-				if (!file) {
-					printf("Could not open %s. Please retry.\n",
-							filename);
-					goto retryDecryptSave;
-				}
-
-				size_t fsize = decodeBigEndian64(merged);
-				
-				fwrite(merged + sizeof(size_t), fsize, 1, file);
-				fclose(file);
-				printf("File saved.\n");
-
-				free(merged);
-			}
-
-			else {
-				printf("%s\n", merged);
-				copyToClipboard(merged);
-				printf("Result copied to clipboard automatically.\n");
-				free(merged);
-			}
-
-			pressEnterToContinue();
-			break;
-		}
-
-		case MAIN_OPT_QUIT:
-		{
-			return 0;
-		}
-
-		case MAIN_OPT_HELP:
-		{
-			system("cls");
-			printf(HELP_MESSAGE);
-			pressEnterToContinue();
-			break;
-		}
-
-		default: {
-			assert(0);
+		else {
+			printf("Encoding to Base64...\n");
+			base64 = encodeBase64(merged, mergedLen, &base64Len);
+			free(merged);
+			printf("%s\n", base64);
+			copyToClipboard((char*)base64);
+			printf("Result copied to clipboard automatically.\n");
+			free(base64);
 		}
 	}
-	goto mainMenu;
 
-	return 0;
+	else if (strcmp(cmd, CMD_DECRYPT) == 0 ||
+			 strcmp(cmd, CMD_DECRYPT_FILE) == 0)
+	{
+		if (privN == 0 || privD == 0) {
+			printf("Private key not set!\n");
+			goto promptCmd;
+		}
+
+		uint8_t* str;
+		size_t len;
+		bool isFile;
+
+		if (strcmp(cmd, CMD_DECRYPT) == 0) {
+			isFile = false;
+			if (argsLen == 0) {
+				printf("Please provide ciphertext!\n");
+				goto promptCmd;
+			}
+			printf("Decoding from Base64...\n");
+			size_t decodedLen;
+			str = decodeBase64(args, argsLen, &decodedLen);
+			len = decodedLen;
+		}
+
+		else {
+			isFile = true;
+			FILE* file;
+
+			if (argsLen == 0) {
+				printf("Please provide filename!\n");
+				goto promptCmd;
+			}
+			memcpy(filename, args, argsLen + 1);
+
+			file = fopen(filename, "rb");
+			if (!file) {
+				printf("Could not open file. Please retry.\n");
+				goto promptCmd;
+			}
+
+			fseek(file, 0, SEEK_END);
+			long fsize = ftell(file);
+			fseek(file, 0, SEEK_SET);
+
+			if (fsize == 0) {
+				printf("File is empty!\n");
+				goto promptCmd;
+			}
+
+			len = fsize;
+
+			str = malloc(len);
+			fread(str, len, 1, file);
+			fclose(file);
+		}
+
+		printf("Using %s.\n", privFilename);
+
+		const int bitsPerBlock = cntBits(privN);
+		size_t size;
+		uint64_t* blocks;
+		uint64_t* decrypted;
+		char* merged;
+		size_t mergedLen;
+
+		printf("Dividing into blocks...\n");
+		blocks = divide(str, len, bitsPerBlock, &size);
+		if (isFile) free(str);
+
+		printf("Decrypting...\n");
+		decrypted = crypt(blocks, size, privN, privD);
+		free(blocks);
+
+		printf("Merging...\n");
+		merged = merge(decrypted, size, bitsPerBlock - 1,
+				&mergedLen);
+		free(decrypted);
+
+		if (isFile) {
+			FILE* file;
+			size_t fsize = decodeBigEndian64(merged);
+
+			char* basename = merged + sizeof(uint64_t) + fsize;
+			
+			printf("Decrypted filename: %s\n", basename);
+			printf("Save as %s? (Y/N) ", basename);
+			char opt = getOption();
+			if (opt == 'Y') {
+				strcpy(filename, basename);
+				goto skipDecryptSavePrompt;
+			}
+
+		decryptSavePrompt:
+			printf("Save as: ");
+			fgets(filename, FILENAME_SIZE, stdin);
+			filename[strcspn(filename, "\n")] = '\0';
+		skipDecryptSavePrompt:
+
+			file = fopen(filename, "r");
+			if (file) {
+				fclose(file);
+				printf("%s exists! ", filename);
+				printf("Confirm overwrite? (Y/N) ");
+				char c = getOption();
+				if (c != 'Y') {
+					goto decryptSavePrompt;
+				}
+			}
+
+			file = fopen(filename, "wb");
+			if (!file) {
+				printf("Could not open %s. Please retry.\n",
+						filename);
+				goto decryptSavePrompt;
+			}
+
+			fwrite(merged + sizeof(size_t), fsize, 1, file);
+			fclose(file);
+			printf("File saved.\n");
+
+			free(merged);
+		}
+
+		else {
+			printf("%s\n", merged);
+			copyToClipboard(merged);
+			printf("Result copied to clipboard automatically.\n");
+			free(merged);
+		}
+	}
+
+	else if (strcmp(cmd, CMD_HELP) == 0)
+	{
+		int pageNum = 0;
+
+		if (argsLen > 0 && 1 == sscanf(args, "%d", &pageNum)) {
+			if (pageNum == 2) goto helpPage2;
+			if (pageNum == 3) goto helpPage3;
+		}
+
+		if (!printFile(HELP_PATH "1.txt")) {
+			printf("Help not found!\n");
+			goto promptCmd;
+		}
+
+		if (pageNum == 1) goto promptCmd;
+		pressAnyKeyToContinue();
+
+	helpPage2:
+		if (!printFile(HELP_PATH "2.txt")) {
+			printf("Help not found!\n");
+			goto promptCmd;
+		}
+
+		if (pageNum == 2) goto promptCmd;
+		pressAnyKeyToContinue();
+
+	helpPage3:
+		if (!printFile(HELP_PATH "3.txt")) {
+			printf("Help not found!\n");
+			goto promptCmd;
+		}
+	}
+
+	else if (strcmp(cmd, CMD_QUIT) == 0)
+	{
+		return 0;
+	}
+
+	else {
+		printf("Invalid command!\n");
+		goto promptCmd;
+	}
+
+	goto promptCmd;
 }
 
 void saveKeynames() {
 	FILE* file = fopen(keynamesFilename, "w");
 	fprintf(file, "%s\n%s", privFilename, pubFilename);
 	fclose(file);
+}
+
+bool loadKey(KeyType keyType) {
+	FILE* file = fopen(keyFilenameFull, "r");
+
+	if (!file) {
+		printf("Could not open file.\n");
+		return false;
+	}
+
+	if (keyType == PUBLIC) {
+		if (2 == fscanf(file, "%" PRIu64 "\n%" PRIu64,
+					&pubN, &pubE)) {
+			strcpy(pubFilename, keyFilename);
+			fclose(file);
+			printf("%s successfully loaded.\n", keyFilename);
+			saveKeynames();
+			return true;
+		}
+	}
+	else {
+		if (2 == fscanf(file, "%" PRIu64 "\n%" PRIu64,
+					&privN, &privD)) {
+			strcpy(privFilename, keyFilename);
+			fclose(file);
+			printf("%s successfully loaded.\n", keyFilename);
+			saveKeynames();
+			return true;
+		}
+	}
+
+	printf("Failed to load key.\n");
+
+	return false;
 }
 
 void loadKeys() {
@@ -570,146 +677,3 @@ void loadKeys() {
 	fclose(kFile);
 }
 
-void setKeysMenu() {
-	const char validSetKeysOptions[] = "12Q";
-	#define OPT_SET_PRIVATE_KEY '1'
-	#define OPT_SET_PUBLIC_KEY  '2'
-	#define OPT_QUIT            'Q'
-
-setKeysMenu:
-	system("cls");
-	printf("\n");
-	printf("SET KEYS MENU:\n");
-	printf("\n");
-	printf("Enter option number to set option.\n");
-	printf("Enter Q to save and go back to main menu.\n");
-	printf("\n");
-
-	printf("1. Private key file: ");
-	if (*privFilename) {
-		printf("%s", privFilename);
-	} else {
-		printf("<NULL>");
-	}
-	printf("\n");
-	printf("2. Public key file:  ");
-	if (*pubFilename) {
-		printf("%s", pubFilename);
-	} else {
-		printf("<NULL>");
-	}
-	printf("\n");
-
-retrySetKeysOpt:
-	printf("> ");
-	char opt = getOption();
-	if (!strchr(validSetKeysOptions, opt)) {
-		printf("Invalid option!\n");
-		goto retrySetKeysOpt;
-	}
-
-	switch (opt)
-	{
-		case OPT_SET_PRIVATE_KEY:
-		{
-		retrySetPriv:
-			printf("Private key file: ");
-
-			fgets(keyFilename, maxNoExtSize, stdin);
-
-			const int noExtLen = strcspn(keyFilename, ".\n");
-			if (noExtLen == 0)
-				goto setKeysMenu;
-
-			keyFilename[noExtLen] = '\0';
-			const int totalLen = noExtLen + privExtLen;
-			strcat(keyFilename, privExt);
-
-			FILE* file;
-			file = fopen(keyFilenameFull, "r");
-
-			if (file == NULL) {
-				printf("Could not open %s. Please retry.\n",
-						keyFilename);
-				goto retrySetPriv;
-			}
-
-			else {
-				if (2 == fscanf(file,
-							"%" PRIu64 "\n%" PRIu64,
-							&privN, &privD)) {
-					memcpy(privFilename, keyFilename, totalLen + 1);
-					fclose(file);
-					printf("Private key %s successfully loaded.\n",
-						keyFilename);
-				}
-
-				else {
-					printf("Couldn't load key from %s. "
-							"Please retry.\n", keyFilename);
-					goto retrySetPriv;
-					fclose(file);
-				}
-			}
-
-			break;
-		}
-
-		case OPT_SET_PUBLIC_KEY:
-		{
-		retrySetPub:
-			printf("Public key file:  ");
-
-			fgets(keyFilename, maxNoExtSize, stdin);
-
-			const int noExtLen = strcspn(keyFilename, ".\n");
-			if (noExtLen == 0)
-				goto setKeysMenu;
-
-			keyFilename[noExtLen] = '\0';
-			const int totalLen = noExtLen + pubExtLen;
-			strcat(keyFilename, pubExt);
-
-			FILE* file;
-			file = fopen(keyFilenameFull, "r");
-
-			if (file == NULL) {
-				printf("Could not open %s. Please retry.\n",
-						keyFilename);
-				goto retrySetPub;
-			}
-
-			else {
-				if (2 == fscanf(file,
-							"%" PRIu64 "\n%" PRIu64,
-							&pubN, &pubE)) {
-					memcpy(pubFilename, keyFilename, totalLen + 1);
-					fclose(file);
-					printf("Public key %s successfully loaded.\n",
-						keyFilename);
-				}
-
-				else {
-					printf("Couldn't load key from %s. "
-							"Please retry.\n", keyFilename);
-					goto retrySetPub;
-					fclose(file);
-				}
-			}
-
-			break;
-		}
-
-		case OPT_QUIT:
-		{
-			saveKeynames();
-			return;
-		}
-
-		default:
-		{
-			assert(0);
-		}
-	}
-	goto setKeysMenu;
-}
