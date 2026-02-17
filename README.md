@@ -1,3 +1,7 @@
+UPDATE 17/02/2026: A program that uses 2048-bit key encryption together with a
+multi-precision math library is out in the big-int repository:
+https://github.com/abzalmyrzash/big-int
+
 This is a program that uses the RSA public-key encryption algorithm.
 
 To get started, you need to generate a pair of keys - one public (.pub file)
